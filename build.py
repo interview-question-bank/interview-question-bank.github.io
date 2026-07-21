@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build a single-file interactive site from the interview question bank + solutions."""
 import html
+import json
 import re
 from pathlib import Path
 
@@ -8,6 +9,15 @@ ROOT = Path("/Users/dnissim")
 BANK = (ROOT / "interview-question-bank.md").read_text()
 SOLS = (ROOT / "interview-question-bank-solutions.md").read_text()
 OUT = Path("/Users/dnissim/interview-bank-site/dist/index.html")
+DIFF = json.loads(Path("/Users/dnissim/interview-bank-site/difficulty.json").read_text())
+DIFF_A = {int(k): v for k, v in DIFF["tierA"].items()}
+SCALE = DIFF["scale"]
+
+def dots(score, rationale):
+    tip = html.escape(f"Difficulty {score}/5 — {SCALE[str(score)]}. {rationale}", quote=True)
+    pips = "".join(f'<i class="{"on" if i < score else ""}"></i>' for i in range(5))
+    return (f'<span class="dots d{score}" title="{tip}" '
+            f'aria-label="Difficulty {score} of 5">{pips}</span>')
 
 # ---------------------------------------------------------------- inline md
 def inline(text: str) -> str:
@@ -245,6 +255,35 @@ def tier_generic(key):
 
 TIER_B_PRE, TIER_B_SUBS = tier_generic("TIER B")
 TIER_C_PRE, TIER_C_SUBS = tier_generic("TIER C")
+
+# ---- difficulty badges on Tier B list items (matched by title substring) ----
+def plain(fragment):
+    return html.unescape(re.sub(r"<[^>]+>", "", fragment))
+
+ITEM_KEYS = [(k, s) for k, s in DIFF["items"]]
+UNMATCHED = []
+
+def badge_items(html_text):
+    """Insert difficulty pills + data-diff on <li> whose text starts with a known key."""
+    chunks = re.split(r"(<li>)", html_text)
+    for idx in range(len(chunks)):
+        if chunks[idx] != "<li>" or idx + 1 >= len(chunks):
+            continue
+        text = plain(chunks[idx + 1][:300]).strip().lstrip("\"'“”‘’")
+        for pos, (key, score) in enumerate(ITEM_KEYS):
+            if text.startswith(key):
+                tip = html.escape(f"Difficulty {score}/5 — {SCALE[str(score)]}", quote=True)
+                chunks[idx] = f'<li data-diff="{score}">'
+                chunks[idx + 1] = (f'<span class="diff d{score}" title="{tip}" '
+                                   f'aria-label="Difficulty {score} of 5">{score}</span>'
+                                   + chunks[idx + 1])
+                ITEM_KEYS.pop(pos)
+                break
+    return "".join(chunks)
+
+TIER_B_SUBS = [(t, badge_items(b)) for t, b in TIER_B_SUBS]
+# Tier C: every item is a screener — difficulty 1 by design (filterable, no pill noise)
+TIER_C_SUBS = [(t, b.replace("<li>", '<li data-diff="1">')) for t, b in TIER_C_SUBS]
 TIER_D_PRE, TIER_D_SUBS = tier_generic("TIER D")
 APP_PRE, APP_SUBS = tier_generic("APPENDIX")
 
@@ -273,11 +312,13 @@ def qcard(q, group_title):
         <div class="sol-body">{sol}</div>
       </details>"""
     body = f'<p class="q-body">{inline(q["body"])}</p>' if q["body"] else ""
+    score, rationale = DIFF_A[q["num"]]
     return f"""
-    <article class="card" id="q{q['num']}" data-search>
+    <article class="card" id="q{q['num']}" data-search data-diff="{score}">
       <div class="card-head">
         <a class="qnum" href="#q{q['num']}" title="Link to question {q['num']}">{q['num']}</a>
         <h4 class="q-title">{inline(q['title'])}</h4>
+        {dots(score, rationale)}
       </div>
       {body}{sol_html}
     </article>"""
@@ -492,6 +533,31 @@ details.keynote.big .sol-body {{ font-size: 14.4px; }}
 .intro-block h3 {{ font-size: 17px; margin: 14px 0 2px; }}
 .intro-block .prose {{ color: var(--fg-soft); font-size: 14.6px; }}
 
+/* ---------- difficulty ---------- */
+.dots {{ display: inline-flex; gap: 3px; align-items: center; margin-left: auto; padding: 4px 2px 0 10px; flex: none; cursor: help; }}
+.dots i {{ width: 7px; height: 7px; border-radius: 50%; background: var(--line); }}
+.dots.d1 i.on, .dots.d2 i.on {{ background: var(--tier-a); }}
+.dots.d3 i.on {{ background: var(--tier-c); }}
+.dots.d4 i.on, .dots.d5 i.on {{ background: var(--tier-d); }}
+span.diff {{
+  display: inline-grid; place-items: center; width: 17px; height: 17px; border-radius: 5px;
+  font-size: 11px; font-weight: 750; margin-right: 7px; vertical-align: 1px; cursor: help;
+  font-family: var(--mono);
+}}
+span.diff.d1, span.diff.d2 {{ background: color-mix(in srgb, var(--tier-a) 16%, transparent); color: var(--tier-a); }}
+span.diff.d3 {{ background: color-mix(in srgb, var(--tier-c) 16%, transparent); color: var(--tier-c); }}
+span.diff.d4, span.diff.d5 {{ background: color-mix(in srgb, var(--tier-d) 16%, transparent); color: var(--tier-d); }}
+.difffilter {{ display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }}
+.difflabel {{ font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: var(--fg-faint); margin-right: 2px; }}
+.dchip {{
+  font: inherit; font-size: 13px; font-weight: 700; width: 32px; height: 28px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--bg-card); color: var(--fg-soft); cursor: pointer;
+}}
+.dchip:hover {{ border-color: var(--accent); color: var(--accent); }}
+.dchip[aria-pressed="true"] {{ background: var(--accent); border-color: var(--accent); color: #fff; }}
+html[data-theme="dark"] .dchip[aria-pressed="true"] {{ color: #0d120d; }}
+.diff-legend {{ font-size: 12.5px; color: var(--fg-faint); margin: 6px 0 0; }}
+
 /* ---------- controls / misc ---------- */
 .controls {{ display: flex; gap: 10px; margin: 22px 0 -6px; }}
 .controls button {{
@@ -571,10 +637,19 @@ footer .in {{ max-width: 1200px; margin: 0 auto; padding: 26px 20px; display: fl
         {INTRO_HTML}
       </section>
 
-      <div class="controls">
+      <div class="controls" style="flex-wrap:wrap; align-items:center; gap:16px">
+        <div class="difffilter" role="group" aria-label="Filter by difficulty">
+          <span class="difflabel">Difficulty</span>
+          <button class="dchip" data-d="1" aria-pressed="false" title="{html.escape(SCALE['1'])}">1</button>
+          <button class="dchip" data-d="2" aria-pressed="false" title="{html.escape(SCALE['2'])}">2</button>
+          <button class="dchip" data-d="3" aria-pressed="false" title="{html.escape(SCALE['3'])}">3</button>
+          <button class="dchip" data-d="4" aria-pressed="false" title="{html.escape(SCALE['4'])}">4</button>
+          <button class="dchip" data-d="5" aria-pressed="false" title="{html.escape(SCALE['5'])}">5</button>
+        </div>
         <button id="expand-all">Expand all solutions</button>
         <button id="collapse-all">Collapse all</button>
       </div>
+      <p class="diff-legend">Difficulty is scored 1–5 per question (1 = warm-up · 3 = solid mid-level · 5 = expert-discriminating) and is independent of the tier — tiers rank <em>quality</em>. Hover any badge for the rationale. Tier-C screeners are all difficulty 1 by design.</p>
 
       <section class="tier" id="tier-a">
         <div class="tier-head"><span class="tier-badge">TIER A</span><h2>Centerpieces</h2></div>
@@ -655,31 +730,48 @@ footer .in {{ max-width: 1200px; margin: 0 auto; padding: 26px 20px; display: fl
   units.forEach(u => u.dataset.text = u.textContent.toLowerCase());
   const sections = Array.from(document.querySelectorAll('.tier, .group'));
 
-  function applySearch() {{
+  const diffSel = new Set();
+  const chips = Array.from(document.querySelectorAll('.dchip'));
+  chips.forEach(c => c.addEventListener('click', () => {{
+    const d = c.dataset.d;
+    diffSel.has(d) ? diffSel.delete(d) : diffSel.add(d);
+    c.setAttribute('aria-pressed', diffSel.has(d));
+    applyFilters();
+  }}));
+
+  function diffOk(u) {{
+    if (!diffSel.size) return true;
+    if (u.dataset.diff && diffSel.has(u.dataset.diff)) return true;
+    // a group item (e.g. the "famous / one-trick" list) passes if a child matches
+    return Array.from(u.querySelectorAll('[data-diff]')).some(el => diffSel.has(el.dataset.diff));
+  }}
+
+  function applyFilters() {{
     const q = input.value.trim().toLowerCase();
     const terms = q.split(/\\s+/).filter(Boolean);
+    const active = terms.length > 0 || diffSel.size > 0;
     let shown = 0;
     units.forEach(u => {{
-      const hit = !terms.length || terms.every(t => u.dataset.text.includes(t));
+      const hit = (!terms.length || terms.every(t => u.dataset.text.includes(t))) && diffOk(u);
       u.classList.toggle('search-hidden', !hit);
-      if (hit && terms.length) shown++;
+      if (hit && active) shown++;
     }});
-    // hide empty groups/sections while searching
+    // hide empty groups/sections while filtering
     sections.forEach(s => {{
-      if (!terms.length) {{ s.classList.remove('search-hidden'); return; }}
+      if (!active) {{ s.classList.remove('search-hidden'); return; }}
       const any = s.querySelector('.card:not(.search-hidden), .prose[data-search] > ul > li:not(.search-hidden), details.keynote:not(.search-hidden)');
       s.classList.toggle('search-hidden', !any);
     }});
-    document.querySelectorAll('.tier-pre, .group-intro, .intro-block, .controls').forEach(el =>
-      el.classList.toggle('search-hidden', terms.length > 0));
-    countEl.textContent = terms.length ? shown + ' hit' + (shown === 1 ? '' : 's') : '';
-    noResults.style.display = terms.length && !shown ? 'block' : 'none';
+    document.querySelectorAll('.tier-pre, .group-intro, .intro-block, .diff-legend').forEach(el =>
+      el.classList.toggle('search-hidden', active));
+    countEl.textContent = active ? shown + ' hit' + (shown === 1 ? '' : 's') : '';
+    noResults.style.display = active && !shown ? 'block' : 'none';
   }}
   let t;
-  input.addEventListener('input', () => {{ clearTimeout(t); t = setTimeout(applySearch, 90); }});
+  input.addEventListener('input', () => {{ clearTimeout(t); t = setTimeout(applyFilters, 90); }});
   document.addEventListener('keydown', e => {{
     if (e.key === '/' && document.activeElement !== input) {{ e.preventDefault(); input.focus(); }}
-    if (e.key === 'Escape' && document.activeElement === input) {{ input.value = ''; applySearch(); input.blur(); }}
+    if (e.key === 'Escape' && document.activeElement === input) {{ input.value = ''; applyFilters(); input.blur(); }}
   }});
 
   // ---------- back to top ----------
@@ -699,3 +791,4 @@ print(f"Tier A questions: {TOTAL_A}; solutions matched: {len([n for n in range(1
 print(f"No per-question solution (expected for behavioral 50-63): {missing}")
 print(f"Solution sections captured: {[(k, len(v)) for k, v in SOL_SECTIONS.items()]}")
 print(f"A-section notes: {list(SOL_A_NOTES.keys())}")
+print(f"Unmatched difficulty keys ({len(ITEM_KEYS)}): {[k for k, _ in ITEM_KEYS]}")
