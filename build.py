@@ -12,6 +12,8 @@ OUT = Path("/Users/dnissim/interview-bank-site/dist/index.html")
 DIFF = json.loads(Path("/Users/dnissim/interview-bank-site/difficulty.json").read_text())
 DIFF_A = {int(k): v for k, v in DIFF["tierA"].items()}
 SCALE = DIFF["scale"]
+PROMPTS = json.loads(Path("/Users/dnissim/interview-bank-site/prompts.json").read_text())
+PROMPTS_A = {int(k): v for k, v in PROMPTS["tierA"].items()}
 
 def dots(score, rationale):
     tip = html.escape(f"Difficulty {score}/5 — {SCALE[str(score)]}. {rationale}", quote=True)
@@ -261,10 +263,21 @@ def plain(fragment):
     return html.unescape(re.sub(r"<[^>]+>", "", fragment))
 
 ITEM_KEYS = [(k, s) for k, s in DIFF["items"]]
-UNMATCHED = []
+PROMPT_KEYS_C = dict(PROMPTS["itemsC"])
+
+def ask_details(prompt):
+    return ('<details class="ask-inline"><summary>Full question</summary>'
+            f'<p>{html.escape(prompt, quote=False)}</p></details>')
+
+def inject_before_close(chunk, insertion):
+    """Insert HTML just before this <li>'s closing tag (first </li> in the chunk)."""
+    pos = chunk.find("</li>")
+    if pos == -1:
+        return chunk + insertion
+    return chunk[:pos] + insertion + chunk[pos:]
 
 def badge_items(html_text):
-    """Insert difficulty pills + data-diff on <li> whose text starts with a known key."""
+    """Insert difficulty pills, data-diff, and full-question panels on matched <li>."""
     chunks = re.split(r"(<li>)", html_text)
     for idx in range(len(chunks)):
         if chunks[idx] != "<li>" or idx + 1 >= len(chunks):
@@ -274,16 +287,35 @@ def badge_items(html_text):
             if text.startswith(key):
                 tip = html.escape(f"Difficulty {score}/5 — {SCALE[str(score)]}", quote=True)
                 chunks[idx] = f'<li data-diff="{score}">'
-                chunks[idx + 1] = (f'<span class="diff d{score}" title="{tip}" '
-                                   f'aria-label="Difficulty {score} of 5">{score}</span>'
-                                   + chunks[idx + 1])
+                chunk = (f'<span class="diff d{score}" title="{tip}" '
+                         f'aria-label="Difficulty {score} of 5">{score}</span>'
+                         + chunks[idx + 1])
+                prompt = PROMPTS["items"].get(key)
+                if prompt:
+                    chunk = inject_before_close(chunk, ask_details(prompt))
+                chunks[idx + 1] = chunk
                 ITEM_KEYS.pop(pos)
+                break
+    return "".join(chunks)
+
+def ask_items_c(html_text):
+    """Insert full-question panels on Tier C <li> matched by prompt key."""
+    chunks = re.split(r"(<li>)", html_text)
+    unused = dict(PROMPT_KEYS_C)
+    for idx in range(len(chunks)):
+        if chunks[idx] != "<li>" or idx + 1 >= len(chunks):
+            continue
+        text = plain(chunks[idx + 1][:300]).strip().lstrip("\"'“”‘’")
+        for key in list(unused):
+            if text.startswith(key):
+                chunks[idx + 1] = inject_before_close(chunks[idx + 1], ask_details(unused.pop(key)))
+                PROMPT_KEYS_C.pop(key, None)
                 break
     return "".join(chunks)
 
 TIER_B_SUBS = [(t, badge_items(b)) for t, b in TIER_B_SUBS]
 # Tier C: every item is a screener — difficulty 1 by design (filterable, no pill noise)
-TIER_C_SUBS = [(t, b.replace("<li>", '<li data-diff="1">')) for t, b in TIER_C_SUBS]
+TIER_C_SUBS = [(t, ask_items_c(b).replace("<li>", '<li data-diff="1">')) for t, b in TIER_C_SUBS]
 TIER_D_PRE, TIER_D_SUBS = tier_generic("TIER D")
 APP_PRE, APP_SUBS = tier_generic("APPENDIX")
 
@@ -312,6 +344,8 @@ def qcard(q, group_title):
         <div class="sol-body">{sol}</div>
       </details>"""
     body = f'<p class="q-body">{inline(q["body"])}</p>' if q["body"] else ""
+    ask = (f'<div class="ask"><span class="ask-label">Ask the candidate</span>'
+           f'<p>{html.escape(PROMPTS_A[q["num"]], quote=False)}</p></div>')
     score, rationale = DIFF_A[q["num"]]
     return f"""
     <article class="card" id="q{q['num']}" data-search data-diff="{score}">
@@ -320,7 +354,7 @@ def qcard(q, group_title):
         <h4 class="q-title">{inline(q['title'])}</h4>
         {dots(score, rationale)}
       </div>
-      {body}{sol_html}
+      {body}{ask}{sol_html}
     </article>"""
 
 def tier_a_html():
@@ -532,6 +566,33 @@ details.keynote.big .sol-body {{ font-size: 14.4px; }}
 .intro-block {{ background: var(--bg-card); border: 1px solid var(--line); border-radius: 14px; padding: 6px 22px 12px; margin: 14px 0; box-shadow: var(--shadow); }}
 .intro-block h3 {{ font-size: 17px; margin: 14px 0 2px; }}
 .intro-block .prose {{ color: var(--fg-soft); font-size: 14.6px; }}
+
+/* ---------- full-form questions ---------- */
+.ask {{
+  margin: 12px 0 4px; padding: 10px 16px 12px; border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent); border-radius: 0 10px 10px 0;
+}}
+.ask-label {{
+  display: block; font-size: 10.5px; font-weight: 800; text-transform: uppercase;
+  letter-spacing: .1em; color: var(--accent); margin-bottom: 4px;
+}}
+.ask p {{ margin: 0; font-size: 14.6px; line-height: 1.62; }}
+details.ask-inline {{ display: block; margin-top: 6px; }}
+details.ask-inline summary {{
+  cursor: pointer; list-style: none; display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12.5px; font-weight: 650; color: var(--accent); user-select: none;
+}}
+details.ask-inline summary::-webkit-details-marker {{ display: none; }}
+details.ask-inline summary::before {{
+  content: ""; width: 6px; height: 6px; border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor; transform: rotate(-45deg); transition: transform .15s ease;
+}}
+details.ask-inline[open] summary::before {{ transform: rotate(45deg); }}
+details.ask-inline p {{
+  margin: 6px 0 2px; padding: 8px 14px; border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent); border-radius: 0 8px 8px 0;
+  font-size: 13.8px; color: var(--fg);
+}}
 
 /* ---------- difficulty ---------- */
 .dots {{ display: inline-flex; gap: 3px; align-items: center; margin-left: auto; padding: 4px 2px 0 10px; flex: none; cursor: help; }}
@@ -792,3 +853,6 @@ print(f"No per-question solution (expected for behavioral 50-63): {missing}")
 print(f"Solution sections captured: {[(k, len(v)) for k, v in SOL_SECTIONS.items()]}")
 print(f"A-section notes: {list(SOL_A_NOTES.keys())}")
 print(f"Unmatched difficulty keys ({len(ITEM_KEYS)}): {[k for k, _ in ITEM_KEYS]}")
+print(f"Unmatched C prompt keys ({len(PROMPT_KEYS_C)}): {list(PROMPT_KEYS_C)}")
+b_prompts_used = len(PROMPTS['items'])
+print(f"A prompts: {len(PROMPTS_A)}; B item prompts: {b_prompts_used}; C prompts: {len(PROMPTS['itemsC'])}")
